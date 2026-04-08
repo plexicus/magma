@@ -52,13 +52,13 @@ C Source File
 │ CPG (DOT /  │────>│ scipy sparse │────>│ Mojo CSR +    │
 │  Parquet)   │     │ adjacency    │     │ SIMD / GPU    │
 └─────────────┘     │ matrices     │     │ (optional)    │
-                    └──────┬──────┘     └───────┬───────┘
+                    └──────┬─-─────┘     └──────┬────-───┘
                            │                    │
-                    ┌──────▼────────────────────▼───┐
+                    ┌──────▼────────────────────▼──-─┐
                     │ UAF Query Engine               │
                     │ (matrix power iteration        │
                     │  on CPU or GPU via device=)    │
-                    └──────────────┬────────────────┘
+                    └─────────────┬─────────--───────┘
                                   │
                     ┌─────────────▼─────────┐
                     │ Findings              │  (file:line coordinates)

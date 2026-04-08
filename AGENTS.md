@@ -28,6 +28,9 @@
 | Testing | pytest | `testpaths = ["tests"]` in pyproject.toml |
 | External | Joern (JVM 11+) | `joern-parse` + `joern-export` for C parsing |
 | Build | setuptools >= 68.0 | `src/magma/` layout |
+| Columnar storage | pyarrow >= 14.0 | Apache Parquet for binary CPG export |
+| GPU compute | Mojo 0.26+ | Native CSR struct, SIMD matvec via subprocess bridge |
+| GPU runtime | Metal (Apple Silicon) | GPU GraphBLAS via Mojo/Metal kernels |
 
 ---
 
@@ -37,43 +40,73 @@
 
 ```
 src/magma/
-├── __init__.py      # Version string only
-├── types.py         # Shared data types (CPGNode, CPGEdge, Finding)
-├── ingest.py        # Joern CLI wrapper + DOT parser
-├── graph.py         # CPGGraph: CPG → scipy sparse CSR matrices
-├── query.py         # UAF detection via matrix power iteration
-└── cli.py           # Click CLI entry point
+├── __init__.py        # Version string only
+├── types.py           # Shared data types (CPGNode, CPGEdge, Finding)
+├── ingest.py          # Joern CLI wrapper + DOT parser + Parquet bridge
+├── parquet.py         # Binary CPG export/load via Apache Parquet + CSR index
+├── graph.py           # CPGGraph: CPG → scipy sparse CSR matrices
+├── query.py           # UAF detection via matrix power iteration (device='cpu'/'gpu')
+├── gpu.py             # GPU SparseMatrix + VRAM sharding (ShardedSparseMatrix)
+├── mojo_bridge.py     # Python↔Mojo bridge for CSR matvec (scalar + SIMD)
+├── mojo/
+│   ├── __init__.mojo  # Package init
+│   ├── hello.mojo     # Hello-world verification
+│   └── csr.mojo       # Native Mojo CSR struct with SIMD matvec
+└── cli.py             # Click CLI entry point
 
 tests/
-├── conftest.py      # Shared fixtures (joern_available, corpus_path, sample_cpg_graph)
-├── corpus/          # Hand-crafted C files (uaf_*.c = vulnerable, clean_*.c = safe)
-├── test_ingest.py   # DOT parser + mocked Joern tests
-├── test_graph.py    # CPGGraph sparse matrix tests
-├── test_query.py    # UAF detection algorithm tests
-├── test_cli.py      # CLI integration tests (CliRunner)
-└── test_e2e.py      # Full pipeline with real Joern (9 files, parametrized)
+├── conftest.py        # Shared fixtures (joern_available, corpus_path, sample_cpg_graph)
+├── corpus/            # Hand-crafted C files (uaf_*.c = vulnerable, clean_*.c = safe)
+├── golden/            # Golden Parquet fixtures for regression testing
+├── test_ingest.py     # DOT parser + mocked Joern tests
+├── test_parquet.py    # Parquet round-trip + file size tests
+├── test_graph.py      # CPGGraph sparse matrix tests
+├── test_query.py      # UAF detection algorithm tests
+├── test_gpu.py        # GPU SparseMatrix operations (matvec, hadamard, detect_uaf)
+├── test_mojo.py       # Mojo CSR + SIMD tests (US-106/107/108)
+├── test_vram.py       # VRAM sharding tests (US-110)
+├── test_cli.py        # CLI integration tests (CliRunner)
+├── test_e2e.py        # Full pipeline with real Joern (9 files, parametrized)
+├── test_golden_ingest.py  # Golden fixture regression (ingest)
+├── test_golden_query.py   # Golden fixture regression (query)
+└── test_benchmark.py      # Parquet vs DOT performance benchmarks
 
-doc/                 # Technical documentation
-examples/            # Example C files
+doc/                   # Technical documentation
+examples/              # Example C files
 ```
 
 ### Module dependency chain
 
 ```
 types.py ← ingest.py ← graph.py ← query.py ← cli.py
+                ↑
+           parquet.py
+                ↑
+         mojo_bridge.py  ←  mojo/csr.mojo
+                ↑
+            gpu.py  ←  query.py (device parameter)
 ```
 
 - `types.py` has zero internal dependencies
-- `ingest.py` depends only on `types.py`
+- `ingest.py` depends on `types.py` and `parquet.py`
+- `parquet.py` depends on `types.py` (pyarrow for I/O)
 - `graph.py` depends on `types.py`
-- `query.py` depends on `graph.py` and `types.py`
+- `query.py` depends on `graph.py`, `types.py`, and `gpu.py` (for device parameter)
+- `gpu.py` depends on `mojo_bridge.py` (for GPU matvec)
+- `mojo_bridge.py` wraps `mojo/csr.mojo` via subprocess
 - `cli.py` orchestrates all modules
 
 ### Data flow
 
 ```
 C file → run_joern() → DOT file → load_cpg() → (nodes, edges)
-→ CPGGraph(nodes, edges) → detect_uaf(graph) → list[Finding]
+→ CPGGraph(nodes, edges) → detect_uaf(graph, device="cpu"|"gpu") → list[Finding]
+                                       │
+                            ┌──────────┴──────────┐
+                            │ CPU: scipy CSR       │ GPU: MojoCSR
+                            │ power iteration      │ SIMD matvec +
+                            │                      │ VRAM sharding
+                            └──────────────────────┘
 ```
 
 ---
@@ -125,19 +158,20 @@ pip install -e .
 magma scan path/to/file.c              # Full pipeline
 magma scan --json-output path/to/file.c # JSON output
 magma scan --max-hops 10 path/to/file.c # Tune sensitivity
-magma parse path/to/file.c             # Export CPG only
+magma parse path/to/file.c             # Export CPG as Parquet (default)
+magma parse --format dot path/to/file.c # Export CPG as DOT (backward compat)
 
-# Tests (no Joern required)
-pytest tests/test_ingest.py tests/test_graph.py tests/test_query.py tests/test_cli.py -v
-
-# Tests (requires Joern)
-pytest tests/test_e2e.py -v
-
-# All tests
-pytest tests/ -v
+# Tests
+pytest tests/ -v                        # All tests (119 passed, 2 skipped)
+pytest tests/test_gpu.py tests/test_mojo.py tests/test_vram.py -v  # GPU/Mojo only
+pytest tests/test_e2e.py -v            # E2E (requires Joern)
 
 # Lint (if ruff configured)
 ruff check src/
+
+# Mojo verification
+mojo run src/magma/mojo/hello.mojo      # Hello world
+mojo run src/magma/mojo/csr.mojo        # CSR self-test
 ```
 
 ---
@@ -158,6 +192,12 @@ ruff check src/
 
 7. **Do NOT use dense matrices.** Always use sparse CSR. Densification kills performance on real CPGs.
 
+8. **Do NOT use `let` or `owned` in Mojo 0.26.** Mojo 0.26 requires `var` for mutable bindings. `let` and `owned` keywords are not supported. Use `.copy()` for value copies and `^` for ownership transfer.
+
+9. **Do NOT convert PythonObject to Mojo native types directly.** `Int(pyobj)` and `Float64(pyobj)` don't work in Mojo 0.26. Stay in PythonObject land or embed data as native Mojo literals via the data-baking approach.
+
+10. **Do NOT install pyarrow into Mojo's pixi environment.** It corrupts the libpython link. Keep pyarrow in the project's `.venv` only.
+
 ---
 
 ## RECENT_DECISIONS
@@ -169,6 +209,11 @@ ruff check src/
 | 2026-04-08 | REACHING_DEF-only in reachability matrix (not AST) | Including AST causes false positives via parent→child traversal |
 | 2026-04-08 | UUID-based temp dirs for joern-export | joern-export requires output dir to NOT exist |
 | 2026-04-08 | Regex-based DOT parser over full grammar | Joern's DOT output is structured enough for regex; simpler and faster |
+| 2026-04-08 | Apache Parquet for binary CPG export | Columnar format, ≤50% of DOT size, CSR index for zero-copy Mojo access |
+| 2026-04-08 | Mojo via pixi + Modular conda channel | `dl.modular.com` and `brew modular` are 404; pixi is the only working install path |
+| 2026-04-08 | Data baking for Mojo bridge | PythonObject can't convert to Mojo Int/Float64; embed values as native List append calls |
+| 2026-04-08 | Subprocess bridge over FFI | Mojo 0.26 Python interop is via `Python.import_module()`, not direct C FFI; subprocess is simpler and more reliable |
+| 2026-04-08 | VRAM budget default 256 MB with Unified Memory fallback | Conservative default; Unified Memory ensures correctness when budget exceeded |
 
 ---
 
@@ -228,7 +273,7 @@ When working with ralph:
 
 For AI assistants working on future phases:
 
-**Phase 1 — GPU Acceleration:** Binary CPG export (Parquet/Protobuf), CSR in Mojo, SIMD vectorization, GPU GraphBLAS kernels, VRAM sharding.
+**Phase 1 — GPU Acceleration (COMPLETE):** Apache Parquet binary CPG export, native Mojo CSR struct with SIMD matvec, GPU SparseMatrix with device='cpu'/'gpu', VRAM sharding with configurable budget + Unified Memory fallback. 119 tests passing.
 
 **Phase 2 — MQL Compiler:** Declarative JSON query schema, query optimizer, dynamic masking (subtract paths through sanitizer functions), path reconstruction.
 

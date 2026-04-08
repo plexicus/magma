@@ -36,19 +36,31 @@ C Source File
 | Module | Role | Key Interface |
 |--------|------|---------------|
 | `types.py` | Shared data types | `CPGNode`, `CPGEdge`, `Finding` |
-| `ingest.py` | Joern CLI wrapper + DOT parser | `run_joern()`, `load_cpg()` |
+| `ingest.py` | Joern CLI wrapper + DOT parser + Parquet bridge | `run_joern()`, `load_cpg()`, `convert_to_parquet()` |
+| `parquet.py` | Binary CPG export/load | `export_parquet()`, `load_parquet()` |
 | `graph.py` | CPG → sparse matrices | `CPGGraph` class |
-| `query.py` | UAF detection via reachability | `detect_uaf()` |
+| `query.py` | UAF detection via reachability | `detect_uaf(graph, device='cpu'/'gpu')` |
+| `gpu.py` | GPU sparse operations + VRAM sharding | `SparseMatrix`, `ShardedSparseMatrix`, `VRAMConfig` |
+| `mojo_bridge.py` | Python↔Mojo bridge | `MojoCSR.matvec()`, `matvec_simd()`, `hadamard()` |
+| `mojo/csr.mojo` | Native Mojo CSR struct | `CSR.matvec()`, SIMD inner loop |
 | `cli.py` | User-facing CLI | `magma parse`, `magma scan` |
 
 ## Data Flow
 
 1. **`cli.py`** orchestrates the pipeline. `magma scan file.c` calls each stage in sequence.
 2. **`ingest.py:run_joern()`** shells out to `joern-parse` and `joern-export`, producing a DOT file.
-3. **`ingest.py:load_cpg()`** parses the DOT into `list[CPGNode]` and `list[CPGEdge]`.
+3. **`ingest.py:load_cpg()`** parses the DOT into `list[CPGNode]` and `list[CPGEdge]`. Optionally via Parquet (`convert_to_parquet()` + `load_parquet()`).
 4. **`graph.py:CPGGraph`** builds per-edge-type scipy sparse CSR matrices from the node/edge lists.
-5. **`query.py:detect_uaf()`** computes reachability via matrix power iteration and returns `list[Finding]`.
+5. **`query.py:detect_uaf()`** computes reachability via matrix power iteration. When `device='gpu'`, uses `gpu.py:SparseMatrix` for matrix operations (Mojo SIMD for large matrices).
 6. **`cli.py`** formats output (human-readable or JSON) and sets exit code.
+
+### GPU execution path
+
+When `detect_uaf(graph, device='gpu')` is called:
+- Small matrices (<1000 rows): scipy fallback (GPU overhead not worth it)
+- Large matrices: `MojoCSR.matvec_simd()` via subprocess (SIMD[DType.float64, 4])
+- VRAM-constrained: `ShardedSparseMatrix` chunks across row-wise sub-matrices
+- Budget exceeded with Unified Memory enabled: full CPU scipy computation (correctness preserved)
 
 ## Design Decisions
 

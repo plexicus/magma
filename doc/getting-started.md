@@ -4,6 +4,7 @@
 
 - Python 3.10+
 - [Joern](https://joern.io/) (Java-based code analysis platform, requires JVM 11+)
+- [Mojo](https://www.modular.com/mojo) (optional, for GPU/SIMD acceleration — install via [pixi](https://pixi.sh/))
 
 ## Installation
 
@@ -11,6 +12,19 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+
+### Mojo installation (optional, for GPU/SIMD)
+
+```bash
+# Install pixi package manager
+brew install pixi
+
+# Install Mojo via pixi with Modular conda channel
+pixi global install -c https://conda.modular.com/max -c conda-forge mojo python=3.11
+
+# Verify
+mojo --version
 ```
 
 Verify installation:
@@ -65,6 +79,10 @@ magma scan --json-output path/to/file.c
 
 ```bash
 magma parse path/to/file.c
+# Produces path/to/file.cpg.parquet/ (default)
+
+# Backward compat: DOT format
+magma parse --format dot path/to/file.c
 # Produces path/to/file.cpg.dot
 ```
 
@@ -118,20 +136,32 @@ No vulnerabilities found.
 ```
 magma/
 ├── src/magma/
-│   ├── __init__.py      # Version
-│   ├── types.py         # CPGNode, CPGEdge, Finding
-│   ├── ingest.py        # Joern CLI + DOT parser
-│   ├── graph.py         # Sparse matrix graph
-│   ├── query.py         # UAF detection engine
-│   └── cli.py           # Click CLI
+│   ├── __init__.py        # Version
+│   ├── types.py           # CPGNode, CPGEdge, Finding
+│   ├── ingest.py          # Joern CLI + DOT parser + Parquet bridge
+│   ├── parquet.py         # Binary CPG export/load via Parquet
+│   ├── graph.py           # Sparse matrix graph
+│   ├── query.py           # UAF detection engine (device='cpu'/'gpu')
+│   ├── gpu.py             # GPU SparseMatrix + VRAM sharding
+│   ├── mojo_bridge.py     # Python↔Mojo bridge
+│   ├── mojo/
+│   │   ├── __init__.mojo
+│   │   ├── hello.mojo
+│   │   └── csr.mojo       # Native Mojo CSR with SIMD
+│   └── cli.py             # Click CLI
 ├── tests/
-│   ├── corpus/          # Test C files
+│   ├── corpus/            # Test C files
+│   ├── golden/            # Parquet golden fixtures
 │   ├── test_ingest.py
+│   ├── test_parquet.py
 │   ├── test_graph.py
 │   ├── test_query.py
+│   ├── test_gpu.py
+│   ├── test_mojo.py
+│   ├── test_vram.py
 │   ├── test_cli.py
 │   └── test_e2e.py
-├── doc/                 # Technical documentation
+├── doc/                   # Technical documentation
 ├── pyproject.toml
 ├── README.md
 └── ROADMAP.md

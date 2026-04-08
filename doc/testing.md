@@ -4,35 +4,46 @@
 
 ```
 tests/
-├── conftest.py          # Shared fixtures
-├── corpus/              # Hand-crafted C test files
-│   ├── uaf_simple.c     # free(ptr); *ptr = 1;
-│   ├── uaf_branch.c     # Conditional free
-│   ├── uaf_loop.c       # Free then loop-use
+├── conftest.py            # Shared fixtures
+├── corpus/                # Hand-crafted C test files
+│   ├── uaf_simple.c       # free(ptr); *ptr = 1;
+│   ├── uaf_branch.c       # Conditional free
+│   ├── uaf_loop.c         # Free then loop-use
 │   ├── uaf_function_call.c  # Free then func(ptr)
 │   ├── uaf_struct_member.c  # Free then obj->field
 │   ├── uaf_double_free.c    # Double free
 │   ├── clean_no_uaf.c       # Correct malloc/use/free
 │   ├── clean_after_null.c   # free; ptr=NULL; use
 │   └── clean_realloc.c      # Realloc pattern
-├── test_ingest.py       # DOT parser + Joern CLI tests
-├── test_graph.py        # CPGGraph sparse matrix tests
-├── test_query.py        # UAF detection algorithm tests
-├── test_cli.py          # CLI integration tests
-└── test_e2e.py          # End-to-end with real Joern
+├── golden/                # Parquet golden fixtures for regression
+├── test_ingest.py         # DOT parser + Joern CLI tests (11 tests)
+├── test_parquet.py        # Parquet round-trip + file size tests (6 tests)
+├── test_graph.py          # CPGGraph sparse matrix tests (9 tests)
+├── test_query.py          # UAF detection algorithm tests (13 tests)
+├── test_gpu.py            # GPU SparseMatrix operations (8 tests)
+├── test_mojo.py           # Mojo CSR + SIMD tests (22 tests, requires Mojo)
+├── test_vram.py           # VRAM sharding tests (17 tests)
+├── test_cli.py            # CLI integration tests (6 tests)
+├── test_e2e.py            # End-to-end with real Joern (9 files, parametrized)
+├── test_golden_ingest.py  # Golden fixture regression (ingest)
+├── test_golden_query.py   # Golden fixture regression (query)
+└── test_benchmark.py      # Parquet vs DOT performance benchmarks
 ```
 
 ## Running Tests
 
 ```bash
-# All unit tests (no Joern required)
+# Full suite (119 passed, 2 skipped)
+pytest tests/ -v
+
+# Unit tests only (no Joern required)
 pytest tests/test_ingest.py tests/test_graph.py tests/test_query.py tests/test_cli.py -v
+
+# GPU + Mojo tests (requires Mojo installed)
+pytest tests/test_gpu.py tests/test_mojo.py tests/test_vram.py -v
 
 # E2E tests (requires Joern installed)
 pytest tests/test_e2e.py -v
-
-# Full suite
-pytest tests/ -v
 ```
 
 ## Test Categories
@@ -42,9 +53,16 @@ pytest tests/ -v
 Run without Joern. Use mocked data and fixtures.
 
 - **test_ingest.py** — DOT parsing with `SAMPLE_DOT` fixture, error handling for missing files, mocked `run_joern` subprocess calls
+- **test_parquet.py** — Parquet round-trip (nodes, edges, properties, null fields, empty graph, multi-edge types), file size vs DOT
 - **test_graph.py** — Hand-crafted CPGNode/CPGEdge lists → CPGGraph → verify adjacency matrix sparsity patterns, node type filtering, edge type enumeration, empty/single-node edge cases
 - **test_query.py** — Synthetic CPG graphs with known free/deref/null patterns → verify detect_uaf finds/excludes expected pairs, max_hops behavior, multi-pair detection
 - **test_cli.py** — Click CliRunner tests for parse/scan commands, exit codes, JSON output format
+
+### GPU tests (`test_gpu.py`, `test_mojo.py`, `test_vram.py`)
+
+- **test_gpu.py** — SparseMatrix CPU/GPU matvec, hadamard, boolean_mask equivalence. `detect_uaf(device='cpu')` vs `detect_uaf(device='gpu')` produce identical results.
+- **test_mojo.py** — Mojo setup (version, hello-world, Python interop), CSR matvec (identity, sparse, random), hadamard, SIMD matvec (matches scalar exactly), Mojo bridge from Parquet. Requires Mojo installed; skips gracefully otherwise.
+- **test_vram.py** — Memory estimation, chunk row calculation, CSR chunking, ShardedSparseMatrix matvec/hadamard (chunked vs single-shot equivalence), Unified Memory fallback, 10K-node synthetic graph, budget constraint verification.
 
 ### E2E tests (`test_e2e.py`)
 

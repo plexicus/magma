@@ -136,7 +136,7 @@ Number of nodes in the graph.
 
 ## `magma.query`
 
-### `detect_uaf(graph: CPGGraph, max_hops: int = 5) -> list[Finding]`
+### `detect_uaf(graph: CPGGraph, max_hops: int = 5, device: Literal["cpu", "gpu"] = "cpu") -> list[Finding]`
 
 Detect Use-After-Free vulnerabilities via sparse matrix reachability.
 
@@ -152,6 +152,7 @@ Detect Use-After-Free vulnerabilities via sparse matrix reachability.
 **Parameters:**
 - `graph` — The CPG graph to query
 - `max_hops` — Maximum data dependency hops (default: 5)
+- `device` — Computation device: `'cpu'` (scipy, default) or `'gpu'` (Mojo SIMD / Metal)
 
 **Returns:** List of `Finding` objects.
 
@@ -164,7 +165,98 @@ Format findings as a human-readable string with numbered entries showing file, l
 - `_find_free_nodes(graph)` — Match CALL nodes by label substring or `METHOD_FULL_NAME` property
 - `_find_deref_nodes(graph)` — Find dereference-related node types + operator indirection calls + all IDENTIFIER nodes
 - `_find_null_assignment_nodes(graph)` — Find nodes with "NULL" or "NIL" in label
-- `_compute_reachability(adjacency, max_hops, sources=None)` — Matrix power iteration. If `sources` is provided, only computes reachability from those source indices
+- `_compute_reachability(adjacency, max_hops, sources=None, device='cpu')` — Matrix power iteration. If `sources` is provided, only computes reachability from those source indices. `device='gpu'` uses Mojo SIMD for large matrices.
+
+---
+
+## `magma.gpu`
+
+### `SparseMatrix`
+
+Device-agnostic sparse matrix wrapper. Wraps scipy CSR for CPU and provides GPU backend.
+
+#### `__init__(self, matrix: sp.csr_matrix, device: Device = "cpu")`
+
+#### `from_csr(cls, matrix, device='cpu') -> SparseMatrix`
+
+#### `matvec(self, x: np.ndarray) -> np.ndarray`
+
+Sparse matrix-vector multiply. GPU path uses Mojo SIMD for matrices with 1000+ rows.
+
+#### `hadamard(self, other: SparseMatrix) -> SparseMatrix`
+
+Element-wise (Hadamard) product.
+
+#### `boolean_mask(self, mask: SparseMatrix) -> SparseMatrix`
+
+Keep entries where mask is nonzero (equivalent to hadamard).
+
+### `VRAMConfig`
+
+Configuration for VRAM sharding.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `budget_bytes` | `int` | 256 MB | Maximum VRAM budget |
+| `chunk_rows` | `int` | 0 (auto) | Rows per chunk |
+| `unified_memory` | `bool` | `True` | Enable Unified Memory fallback |
+
+### `ShardedSparseMatrix`
+
+Sparse matrix with VRAM-aware chunked operations.
+
+#### `from_csr(cls, csr, config=None) -> ShardedSparseMatrix`
+
+#### `matvec(self, x: np.ndarray) -> np.ndarray`
+
+Chunked matvec — processes row chunks independently, concatenates results.
+
+#### `hadamard(self, other: ShardedSparseMatrix) -> ShardedSparseMatrix`
+
+Chunked Hadamard product.
+
+#### Properties: `shape`, `using_unified_memory`, `num_chunks`
+
+### Utility functions
+
+- `estimate_matrix_bytes(csr)` — Estimate CSR memory in bytes
+- `compute_chunk_rows(csr, budget_bytes)` — Auto-calculate chunk size
+- `chunk_csr(csr, chunk_rows)` — Split CSR into row-wise sub-matrices
+- `make_reachability_gpu(adjacency, max_hops, device)` — Reachability computation on specified device
+
+---
+
+## `magma.mojo_bridge`
+
+### `MojoCSR`
+
+Python wrapper around Mojo CSR operations via subprocess.
+
+#### `__init__(self, row_ptr, col_idx, nrows, ncols)`
+
+#### `from_csr_parquet(cls, csr_path, edge_type) -> MojoCSR`
+
+Load CSR from Parquet CSR index table.
+
+#### `matvec(self, x: list[float]) -> list[float]`
+
+Scalar sparse matrix-vector multiply via Mojo.
+
+#### `matvec_simd(self, x: list[float]) -> list[float]`
+
+SIMD-accelerated matvec using `SIMD[DType.float64, 4]` with `reduce_add()`.
+
+#### `hadamard(self, other: MojoCSR) -> MojoCSR`
+
+Hadamard product with two-pointer intersection of sorted columns.
+
+#### `boolean_mask(self, mask: MojoCSR) -> MojoCSR`
+
+Equivalent to hadamard.
+
+### `mojo_available() -> bool`
+
+Check if Mojo is installed and the CSR module exists.
 
 ---
 

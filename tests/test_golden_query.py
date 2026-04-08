@@ -5,6 +5,8 @@ assert the findings match an exact saved snapshot. They catch regressions
 in the query engine: line numbers shifting, descriptions changing, or
 findings appearing/disappearing silently.
 
+Fixtures are loaded from Parquet when available, falling back to DOT.
+
 To regenerate golden fixtures:
     python tests/generate_goldens.py
 """
@@ -17,7 +19,8 @@ from pathlib import Path
 import pytest
 
 from magma.graph import CPGGraph
-from magma.ingest import load_cpg
+from magma.ingest import _parse_dot
+from magma.parquet import load_parquet
 from magma.query import detect_uaf
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -30,13 +33,21 @@ GOLDEN_QUERY_CASES = [
 ]
 
 
+def _load_golden(c_file: str) -> tuple[list, list]:
+    """Load nodes/edges from Parquet fixture, falling back to DOT."""
+    pq_path = GOLDEN_DIR / f"{c_file}.parquet"
+    if pq_path.exists():
+        return load_parquet(pq_path)
+    dot_path = GOLDEN_DIR / f"{c_file}.dot"
+    return _parse_dot(dot_path)
+
+
 @pytest.mark.parametrize("c_file,expected_count,_desc", GOLDEN_QUERY_CASES)
 def test_query_finding_count(
     c_file: str, expected_count: int, _desc: str | None
 ) -> None:
     """Query produces the expected number of findings."""
-    dot_path = GOLDEN_DIR / f"{c_file}.dot"
-    nodes, edges = load_cpg(dot_path)
+    nodes, edges = _load_golden(c_file)
     graph = CPGGraph(nodes, edges)
     findings = detect_uaf(graph)
 
@@ -53,8 +64,7 @@ def test_query_output_matches_snapshot(c_file: str) -> None:
     assert findings_path.exists(), f"Golden findings missing: {findings_path}"
 
     expected = json.loads(findings_path.read_text())
-    dot_path = GOLDEN_DIR / f"{c_file}.dot"
-    nodes, edges = load_cpg(dot_path)
+    nodes, edges = _load_golden(c_file)
     graph = CPGGraph(nodes, edges)
     findings = detect_uaf(graph)
 
@@ -83,8 +93,7 @@ def test_query_finding_descriptions(
     if expected_desc is None:
         pytest.skip("Clean file — no description to check")
 
-    dot_path = GOLDEN_DIR / f"{c_file}.dot"
-    nodes, edges = load_cpg(dot_path)
+    nodes, edges = _load_golden(c_file)
     graph = CPGGraph(nodes, edges)
     findings = detect_uaf(graph)
 

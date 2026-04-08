@@ -1,8 +1,8 @@
-"""Golden tests for DOT ingestion.
+"""Golden tests for CPG ingestion (Parquet + DOT).
 
-These tests parse real Joern DOT exports (saved in tests/golden/) and assert
-the parsed nodes/edges match an exact snapshot. They catch regressions when
-Joern's DOT output format changes across versions.
+These tests load golden fixtures from tests/golden/ and assert the parsed
+nodes/edges match an exact snapshot. They test the Parquet pipeline by
+default (load_parquet), falling back to DOT parsing when no .parquet exists.
 
 To regenerate golden fixtures:
     python tests/generate_goldens.py
@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from magma.ingest import load_cpg
+from magma.ingest import _parse_dot
+from magma.parquet import load_parquet
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
@@ -26,16 +27,23 @@ GOLDEN_FILES = [
 ]
 
 
-@pytest.mark.parametrize("c_file", GOLDEN_FILES)
-def test_dot_parse_matches_snapshot(c_file: str) -> None:
-    """Parsing a golden DOT file produces the expected node/edge structure."""
+def _load_golden(c_file: str) -> tuple[list, list]:
+    """Load nodes/edges from Parquet fixture, falling back to DOT."""
+    pq_path = GOLDEN_DIR / f"{c_file}.parquet"
+    if pq_path.exists():
+        return load_parquet(pq_path)
     dot_path = GOLDEN_DIR / f"{c_file}.dot"
+    return _parse_dot(dot_path)
+
+
+@pytest.mark.parametrize("c_file", GOLDEN_FILES)
+def test_golden_parse_matches_snapshot(c_file: str) -> None:
+    """Loading a golden fixture produces the expected node/edge structure."""
     snapshot_path = GOLDEN_DIR / f"{c_file}.snapshot.json"
-    assert dot_path.exists(), f"Golden DOT missing: {dot_path}"
     assert snapshot_path.exists(), f"Golden snapshot missing: {snapshot_path}"
 
     expected = json.loads(snapshot_path.read_text())
-    nodes, edges = load_cpg(dot_path)
+    nodes, edges = _load_golden(c_file)
 
     # Counts must match exactly
     assert len(nodes) == expected["node_count"], (
@@ -63,11 +71,10 @@ def test_dot_parse_matches_snapshot(c_file: str) -> None:
 
 
 @pytest.mark.parametrize("c_file", GOLDEN_FILES)
-def test_dot_parse_deterministic(c_file: str) -> None:
-    """Parsing the same DOT file twice produces identical results."""
-    dot_path = GOLDEN_DIR / f"{c_file}.dot"
-    nodes1, edges1 = load_cpg(dot_path)
-    nodes2, edges2 = load_cpg(dot_path)
+def test_golden_parse_deterministic(c_file: str) -> None:
+    """Loading the same golden fixture twice produces identical results."""
+    nodes1, edges1 = _load_golden(c_file)
+    nodes2, edges2 = _load_golden(c_file)
 
     assert len(nodes1) == len(nodes2)
     assert len(edges1) == len(edges2)
@@ -77,3 +84,12 @@ def test_dot_parse_deterministic(c_file: str) -> None:
         assert n1.label == n2.label
         assert n1.line_number == n2.line_number
         assert n1.properties == n2.properties
+
+
+@pytest.mark.parametrize("c_file", GOLDEN_FILES)
+def test_parquet_fixture_exists(c_file: str) -> None:
+    """Each golden file has a .parquet fixture."""
+    pq_path = GOLDEN_DIR / f"{c_file}.parquet"
+    assert pq_path.exists(), f"Parquet fixture missing: {pq_path}"
+    assert (pq_path / "nodes.parquet").exists()
+    assert (pq_path / "edges.parquet").exists()

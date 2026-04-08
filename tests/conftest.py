@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import shutil
+import warnings
 from pathlib import Path
 
 import pytest
 
 from magma.graph import CPGGraph
 from magma.types import CPGEdge, CPGNode
+
+# Suppress deprecation warnings from load_cpg() in tests — we still test the
+# deprecated path works.  Tests for convert_to_parquet verify the new path.
+warnings.filterwarnings("ignore", message="load_cpg.*deprecated", category=DeprecationWarning)
+warnings.simplefilter("ignore", DeprecationWarning)
 
 
 @pytest.fixture

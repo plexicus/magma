@@ -10,7 +10,8 @@ from pathlib import Path
 import click
 
 from magma.graph import CPGGraph
-from magma.ingest import JoernError, load_cpg, run_joern
+from magma.ingest import JoernError, _parse_dot, convert_to_parquet, run_joern
+from magma.parquet import load_parquet
 from magma.query import detect_uaf, format_findings
 
 
@@ -26,21 +27,43 @@ def main() -> None:
     "-o", "--output",
     type=click.Path(path_type=Path),
     default=None,
-    help="Output path for the CPG DOT file. Defaults to <file>.cpg.dot",
+    help="Output path. Defaults to <file>.cpg.parquet (or .cpg.dot with --format dot).",
 )
-def parse(file: Path, output: Path | None) -> None:
-    """Parse a C file and export its Code Property Graph as DOT."""
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["parquet", "dot"]),
+    default="parquet",
+    show_default=True,
+    help="Output format. 'dot' for backward compatibility.",
+)
+def parse(file: Path, output: Path | None, fmt: str) -> None:
+    """Parse a C file and export its Code Property Graph."""
     if output is None:
-        output = file.with_suffix(".cpg.dot")
+        suffix = ".cpg.dot" if fmt == "dot" else ".cpg.parquet"
+        output = file.with_suffix(suffix)
 
     try:
         click.echo(f"Parsing {file} with Joern...")
         dot_path = run_joern(file, output.parent / ".joern_output")
-        click.echo(f"CPG exported to {dot_path}")
 
-        # Validate the export
-        nodes, edges = load_cpg(dot_path)
-        click.echo(f"Parsed {len(nodes)} nodes, {len(edges)} edges")
+        if fmt == "dot":
+            # Copy DOT to output location
+            output.write_text(dot_path.read_text())
+            click.echo(f"CPG exported to {output}")
+            nodes, edges = _parse_dot(dot_path)
+            click.echo(f"Parsed {len(nodes)} nodes, {len(edges)} edges")
+        else:
+            pq_path = convert_to_parquet(dot_path)
+            # Move to requested output path if different
+            if pq_path.resolve() != output.resolve():
+                import shutil
+                if output.exists():
+                    shutil.rmtree(output)
+                shutil.move(str(pq_path), str(output))
+            click.echo(f"CPG exported to {output}")
+            nodes, edges = load_parquet(output)
+            click.echo(f"Parsed {len(nodes)} nodes, {len(edges)} edges")
 
     except JoernError as e:
         click.echo(f"Error: {e}", err=True)
@@ -70,9 +93,10 @@ def scan(file: Path, max_hops: int, json_output: bool) -> None:
             click.echo(f"[1/4] Parsing {file}...", err=True)
             dot_path = run_joern(file, tmpdir_path)
 
-            # Step 2: Load CPG
-            click.echo("[2/4] Loading CPG...", err=True)
-            nodes, edges = load_cpg(dot_path)
+            # Step 2: Convert to Parquet and load
+            click.echo("[2/4] Loading CPG (via Parquet)...", err=True)
+            pq_path = convert_to_parquet(dot_path)
+            nodes, edges = load_parquet(pq_path)
             click.echo(f"      {len(nodes)} nodes, {len(edges)} edges", err=True)
 
             # Step 3: Build graph

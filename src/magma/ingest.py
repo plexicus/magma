@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import warnings
 from pathlib import Path
 
 from magma.types import CPGEdge, CPGNode
@@ -118,6 +119,12 @@ def run_joern(file_path: Path, output_dir: Path) -> Path:
 def load_cpg(dot_path: Path) -> tuple[list[CPGNode], list[CPGEdge]]:
     """Parse a Joern DOT CPG export into node and edge lists.
 
+    .. deprecated::
+        Use :func:`convert_to_parquet` + :func:`magma.parquet.load_parquet` instead.
+
+    Internally converts DOT to Parquet, then loads from Parquet — proving the
+    migration pipeline works end-to-end even for deprecated callers.
+
     Args:
         dot_path: Path to the Joern DOT export file.
 
@@ -127,6 +134,25 @@ def load_cpg(dot_path: Path) -> tuple[list[CPGNode], list[CPGEdge]]:
     Raises:
         JoernError: If the DOT file cannot be parsed.
     """
+    warnings.warn(
+        "load_cpg() is deprecated. Use convert_to_parquet() + load_parquet() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from tempfile import TemporaryDirectory
+    from magma.parquet import load_parquet
+
+    dot_path = Path(dot_path)
+    with TemporaryDirectory() as tmpdir:
+        pq_path = Path(tmpdir) / "cpg.parquet"
+        nodes, edges = _parse_dot(dot_path)
+        from magma.parquet import export_parquet
+        export_parquet(nodes, edges, pq_path)
+        return load_parquet(pq_path)
+
+
+def _parse_dot(dot_path: Path) -> tuple[list[CPGNode], list[CPGEdge]]:
+    """Parse a Joern DOT file into node and edge lists (internal, no warning)."""
     dot_path = Path(dot_path)
     if not dot_path.exists():
         raise JoernError(f"CPG DOT file not found: {dot_path}")
@@ -178,3 +204,25 @@ def load_cpg(dot_path: Path) -> tuple[list[CPGNode], list[CPGEdge]]:
             ))
 
     return nodes, edges
+
+
+def convert_to_parquet(dot_path: Path) -> Path:
+    """Convert a Joern DOT CPG export to Parquet format.
+
+    Args:
+        dot_path: Path to the Joern DOT export file.
+
+    Returns:
+        Path to the created Parquet directory.
+
+    Raises:
+        JoernError: If the DOT file cannot be parsed.
+    """
+    from magma.parquet import export_parquet
+
+    dot_path = Path(dot_path)
+    nodes, edges = _parse_dot(dot_path)
+
+    pq_path = dot_path.with_suffix(".parquet")
+    export_parquet(nodes, edges, pq_path)
+    return pq_path

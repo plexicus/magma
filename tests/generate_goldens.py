@@ -5,6 +5,7 @@ Usage:
     python tests/generate_goldens.py
 
 Requires Joern to be installed (joern-parse + joern-export on PATH).
+Generates both .dot and .parquet fixtures for each corpus file.
 """
 
 from __future__ import annotations
@@ -33,7 +34,8 @@ def main() -> None:
     # Add project to path
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     from magma.graph import CPGGraph
-    from magma.ingest import load_cpg, run_joern
+    from magma.ingest import _parse_dot, convert_to_parquet, run_joern
+    from magma.parquet import load_parquet
     from magma.query import detect_uaf
 
     GOLDEN_DIR.mkdir(exist_ok=True)
@@ -53,8 +55,17 @@ def main() -> None:
             # Save raw DOT
             (GOLDEN_DIR / f"{c_file}.dot").write_text(dot_content)
 
+            # Save Parquet
+            pq_path = convert_to_parquet(dot_path)
+            pq_dest = GOLDEN_DIR / f"{c_file}.parquet"
+            if pq_dest.exists():
+                shutil.rmtree(pq_dest)
+            shutil.move(str(pq_path), str(pq_dest))
+
+            # Load from Parquet for snapshot (proves round-trip works)
+            nodes, edges = load_parquet(pq_dest)
+
             # Save node/edge snapshot
-            nodes, edges = load_cpg(dot_path)
             snapshot = {
                 "node_count": len(nodes),
                 "edge_count": len(edges),

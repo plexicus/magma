@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from magma.ingest import JoernError, load_cpg, run_joern
+from magma.ingest import JoernError, convert_to_parquet, load_cpg, run_joern
+from magma.parquet import load_parquet
 
 
 SAMPLE_DOT = """\
@@ -117,3 +118,48 @@ class TestRunJoern:
             mock_run.side_effect = CalledProcessError(1, ["which", "joern-parse"])
             with pytest.raises(JoernError, match="not found"):
                 run_joern(tmp_path / "test.c", tmp_path / "out")
+
+
+class TestConvertToParquet:
+    """Tests for convert_to_parquet DOT→Parquet bridge."""
+
+    def test_creates_parquet_directory(self, tmp_path: Path) -> None:
+        """Test that convert_to_parquet creates a Parquet directory from DOT."""
+        dot_path = tmp_path / "cpg.dot"
+        dot_path.write_text(SAMPLE_DOT)
+
+        pq_path = convert_to_parquet(dot_path)
+
+        assert pq_path.exists()
+        assert pq_path.is_dir()
+        assert (pq_path / "nodes.parquet").exists()
+        assert (pq_path / "edges.parquet").exists()
+        assert (pq_path / "csr.parquet").exists()
+
+    def test_parquet_matches_dot_data(self, tmp_path: Path) -> None:
+        """Test that converted Parquet has same nodes/edges as the DOT."""
+        dot_path = tmp_path / "cpg.dot"
+        dot_path.write_text(SAMPLE_DOT)
+
+        pq_path = convert_to_parquet(dot_path)
+        pq_nodes, pq_edges = load_parquet(pq_path)
+
+        dot_nodes, dot_edges = load_cpg(dot_path)
+
+        assert len(pq_nodes) == len(dot_nodes)
+        assert len(pq_edges) == len(dot_edges)
+        for pq_n, dot_n in zip(pq_nodes, dot_nodes, strict=False):
+            assert pq_n.id == dot_n.id
+            assert pq_n.type == dot_n.type
+            assert pq_n.label == dot_n.label
+
+    def test_output_path_suffix(self, tmp_path: Path) -> None:
+        """Test that output path uses .parquet suffix."""
+        dot_path = tmp_path / "subdir" / "my_file.dot"
+        dot_path.parent.mkdir(parents=True)
+        dot_path.write_text(SAMPLE_DOT)
+
+        pq_path = convert_to_parquet(dot_path)
+
+        assert pq_path.name == "my_file.parquet"
+        assert pq_path.parent == dot_path.parent

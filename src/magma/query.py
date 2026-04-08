@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import scipy.sparse as sp
 
@@ -15,7 +17,7 @@ FREE_FUNCTIONS = {"free", "vPortFree", "kfree", "cfree", "afree"}
 DATA_DEP_EDGE_TYPES = ["REACHING_DEF", "DDG"]
 
 
-def detect_uaf(graph: CPGGraph, max_hops: int = 5) -> list[Finding]:
+def detect_uaf(graph: CPGGraph, max_hops: int = 5, device: Literal["cpu", "gpu"] = "cpu") -> list[Finding]:
     """Detect Use-After-Free vulnerabilities in a CPG using sparse matrix reachability.
 
     Algorithm:
@@ -30,6 +32,7 @@ def detect_uaf(graph: CPGGraph, max_hops: int = 5) -> list[Finding]:
     Args:
         graph: The CPG graph to query.
         max_hops: Maximum number of data dependency hops to traverse.
+        device: Computation device — 'cpu' (scipy, default) or 'gpu' (Metal).
 
     Returns:
         List of Finding objects for detected UAF vulnerabilities.
@@ -58,7 +61,7 @@ def detect_uaf(graph: CPGGraph, max_hops: int = 5) -> list[Finding]:
 
     # Step 4: Build data dependency matrix and compute reachability
     m_data = graph.combined_adjacency(DATA_DEP_EDGE_TYPES)
-    reachability = _compute_reachability(m_data, max_hops)
+    reachability = _compute_reachability(m_data, max_hops, device=device)
 
     # Step 5: Find null-assignment nodes for anti-pattern exclusion
     null_indices = _find_null_assignment_nodes(graph)
@@ -66,7 +69,7 @@ def detect_uaf(graph: CPGGraph, max_hops: int = 5) -> list[Finding]:
     # Step 6: Build null-mask (nodes reachable from null assignments)
     null_mask = sp.csr_matrix(reachability.shape, dtype=np.int8)
     if null_indices:
-        null_mask = _compute_reachability(m_data, max_hops, sources=null_indices)
+        null_mask = _compute_reachability(m_data, max_hops, sources=null_indices, device=device)
 
     # Step 7: Find free→deref pairs, excluding null-assignment paths
     findings: list[Finding] = []
@@ -224,6 +227,7 @@ def _compute_reachability(
     adjacency: sp.csr_matrix,
     max_hops: int,
     sources: list[int] | None = None,
+    device: Literal["cpu", "gpu"] = "cpu",
 ) -> sp.csr_matrix:
     """Compute reachability matrix via sparse matrix power iteration.
 
@@ -233,6 +237,7 @@ def _compute_reachability(
         adjacency: The adjacency matrix.
         max_hops: Maximum number of hops.
         sources: If provided, only compute reachability from these source indices.
+        device: Computation device — 'cpu' (scipy) or 'gpu' (Metal).
 
     Returns:
         Reachability matrix (binary, CSR format).

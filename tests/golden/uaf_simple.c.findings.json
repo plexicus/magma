@@ -1,0 +1,12 @@
+{
+  "file": "uaf_simple.c",
+  "finding_count": 1,
+  "findings": [
+    {
+      "vuln_type": "Use-After-Free",
+      "file": "<unknown>",
+      "line": 6,
+      "description": "Pointer freed at line 5 (free(ptr)) then dereferenced at line 6 (ptr)"
+    }
+  ]
+}
